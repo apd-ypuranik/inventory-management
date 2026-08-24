@@ -120,6 +120,51 @@ class CreatePurchaseOrderRequest(BaseModel):
     expected_delivery_date: str
     notes: Optional[str] = None
 
+class RestockCandidate(BaseModel):
+    item_sku: str
+    item_name: str
+    current_demand: int
+    forecasted_demand: int
+    trend: str
+    quantity_on_hand: int
+    reorder_point: int
+    unit_cost: float
+    urgency_score: float
+    recommended_quantity: int
+    line_total: float
+    included: bool
+
+class RestockRecommendationResponse(BaseModel):
+    budget: float
+    total_cost: float
+    remaining_budget: float
+    items: List[RestockCandidate]
+
+class RestockOrderLineRequest(BaseModel):
+    item_sku: str
+    item_name: str
+    quantity: int
+    unit_cost: float
+
+class CreateRestockOrderRequest(BaseModel):
+    budget: float
+    items: List[RestockOrderLineRequest]
+
+class RestockOrderResponse(BaseModel):
+    id: str
+    order_number: str
+    customer: str
+    items: List[dict]
+    status: str
+    order_date: str
+    expected_delivery: str
+    total_value: float
+    source: str
+    lead_time_days: int
+
+# In-memory store for submitted restocking orders (resets on server restart)
+restocking_orders: List[dict] = []
+
 # API endpoints
 @app.get("/")
 def root():
@@ -303,6 +348,115 @@ def get_monthly_trends():
     result = list(months.values())
     result.sort(key=lambda x: x['month'])
     return result
+
+TREND_WEIGHTS = {"increasing": 1.5, "stable": 1.0, "decreasing": 0.5}
+
+def build_restock_recommendations(budget: float) -> RestockRecommendationResponse:
+    """Rank demand-forecast items by restock urgency, then greedily fill the budget."""
+    inventory_by_sku = {item["sku"]: item for item in inventory_items}
+    # Several demand-forecast SKUs have no matching inventory record in this mock
+    # dataset. Treat those as unstocked (zero on-hand/reorder point) with a default
+    # unit cost rather than dropping them, so they can still surface as candidates.
+    UNSTOCKED_FALLBACK = {"quantity_on_hand": 0, "reorder_point": 0, "unit_cost": 15.0}
+
+    candidates = []
+    for forecast in demand_forecasts:
+        inv = inventory_by_sku.get(forecast["item_sku"], UNSTOCKED_FALLBACK)
+
+        shortage_gap = max(0, forecast["forecasted_demand"] - inv["quantity_on_hand"])
+        reorder_gap = max(0, inv["reorder_point"] - inv["quantity_on_hand"])
+        trend_weight = TREND_WEIGHTS.get(forecast["trend"], 1.0)
+        urgency_score = trend_weight * (shortage_gap + reorder_gap)
+
+        if urgency_score <= 0:
+            continue
+
+        recommended_quantity = max(shortage_gap, reorder_gap, 1)
+        candidates.append({
+            "item_sku": forecast["item_sku"],
+            "item_name": forecast["item_name"],
+            "current_demand": forecast["current_demand"],
+            "forecasted_demand": forecast["forecasted_demand"],
+            "trend": forecast["trend"],
+            "quantity_on_hand": inv["quantity_on_hand"],
+            "reorder_point": inv["reorder_point"],
+            "unit_cost": inv["unit_cost"],
+            "urgency_score": urgency_score,
+            "recommended_quantity": recommended_quantity,
+        })
+
+    # Rank by urgency (desc), then by cost (asc) so cheaper items break ties
+    candidates.sort(key=lambda c: (-c["urgency_score"], c["unit_cost"]))
+
+    remaining_budget = budget
+    included_items = []
+    for candidate in candidates:
+        line_total = round(candidate["recommended_quantity"] * candidate["unit_cost"], 2)
+        if line_total > remaining_budget:
+            # Whole-unit only: skip this item, keep checking cheaper remaining items
+            continue
+        remaining_budget -= line_total
+        included_items.append(RestockCandidate(
+            **candidate,
+            line_total=line_total,
+            included=True
+        ))
+
+    total_cost = round(budget - remaining_budget, 2)
+    return RestockRecommendationResponse(
+        budget=budget,
+        total_cost=total_cost,
+        remaining_budget=round(remaining_budget, 2),
+        items=included_items
+    )
+
+@app.get("/api/restocking/recommendations", response_model=RestockRecommendationResponse)
+def get_restock_recommendations(budget: float):
+    """Get demand-driven restock recommendations that fit within a given budget"""
+    if budget < 0 or budget > 100000:
+        raise HTTPException(status_code=400, detail="Budget must be between 0 and 100000")
+    return build_restock_recommendations(budget)
+
+@app.post("/api/restocking/orders", response_model=RestockOrderResponse)
+def create_restock_order(request: CreateRestockOrderRequest):
+    """Submit a restocking order built from recommended items"""
+    if not request.items:
+        raise HTTPException(status_code=400, detail="Order must contain at least one item")
+
+    for line in request.items:
+        if line.quantity <= 0:
+            raise HTTPException(status_code=400, detail="Item quantity must be greater than 0")
+
+    total_value = round(sum(line.quantity * line.unit_cost for line in request.items), 2)
+    if total_value > request.budget:
+        raise HTTPException(status_code=400, detail="Order total exceeds provided budget")
+
+    from datetime import date, timedelta
+    order_date = date.today().isoformat()
+    expected_delivery = (date.today() + timedelta(days=7)).isoformat()
+
+    new_order = {
+        "id": f"RSTK-{len(restocking_orders) + 1}",
+        "order_number": f"RO-{1000 + len(restocking_orders) + 1}",
+        "customer": "Internal Restocking",
+        "items": [
+            {"sku": line.item_sku, "name": line.item_name, "quantity": line.quantity, "unit_price": line.unit_cost}
+            for line in request.items
+        ],
+        "status": "Processing",
+        "order_date": order_date,
+        "expected_delivery": expected_delivery,
+        "total_value": total_value,
+        "source": "restocking",
+        "lead_time_days": 7
+    }
+    restocking_orders.append(new_order)
+    return new_order
+
+@app.get("/api/restocking/orders", response_model=List[RestockOrderResponse])
+def get_restock_orders():
+    """Get all submitted restocking orders"""
+    return restocking_orders
 
 if __name__ == "__main__":
     import uvicorn
