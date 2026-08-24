@@ -6,6 +6,7 @@ export default {
     orders: '注文',
     finance: '財務',
     demandForecast: '需要予測',
+    restocking: '補充',
     companyName: '触媒コンポーネンツ',
     subtitle: '在庫管理システム'
   },
@@ -106,6 +107,8 @@ export default {
     title: '注文',
     description: '顧客注文の表示と管理',
     allOrders: 'すべての注文',
+    submittedOrders: '提出済み注文',
+    noSubmittedOrders: 'まだ補充注文が提出されていません',
     totalOrders: '総注文数',
     totalRevenue: '総収益',
     avgOrderValue: '平均注文額',
@@ -125,7 +128,8 @@ export default {
       totalValue: '合計金額',
       status: 'ステータス',
       expectedDelivery: '予定配達日',
-      actualDelivery: '実際の配達日'
+      actualDelivery: '実際の配達日',
+      leadTime: 'リードタイム'
     }
   },
 
@@ -185,6 +189,38 @@ export default {
       change: '変化',
       trend: 'トレンド',
       period: '期間'
+    }
+  },
+
+  // Restocking
+  restocking: {
+    title: '補充',
+    description: '予算を設定し、需要予測に基づいて補充を提案します',
+    budgetLabel: '利用可能な予算',
+    placeOrder: '注文する',
+    placingOrder: '注文中...',
+    noRecommendations: 'この予算レベルでの補充提案はありません',
+    summary: {
+      totalCost: '合計コスト',
+      remainingBudget: '残り予算',
+      itemsCount: '提案品目数'
+    },
+    table: {
+      sku: 'SKU',
+      itemName: '品目名',
+      trend: 'トレンド',
+      currentStock: '現在の在庫',
+      forecastedDemand: '予測需要',
+      urgency: '緊急度',
+      recommendedQty: '推奨数量',
+      unitCost: '単価',
+      lineTotal: '小計'
+    },
+    confirmation: {
+      title: '注文完了',
+      message: '注文{orderNumber}が正常に提出されました。',
+      leadTime: 'リードタイム: {days}日',
+      expectedDelivery: '予定配達日: {date}'
     }
   },
 
